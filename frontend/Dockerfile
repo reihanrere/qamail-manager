@@ -14,7 +14,7 @@ ENV VITE_API_URL=${VITE_API_URL}
 RUN bun run build
 
 # ---- runtime ----
-FROM nginx:1.29-alpine
+FROM nginx:1.31-alpine
 # The nginx image fills ${...} variables of templates/*.template from the environment at start
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 ENV TRUSTED_PROXY_CIDR=127.0.0.1
