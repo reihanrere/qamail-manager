@@ -1,0 +1,123 @@
+# Test every push and pull request: backend, frontend, Email Worker, and a browser end-to-end run.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One run per ref
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      # CI-only value; the database is disposable and every table in it is emptied by the tests
+      TEST_DATABASE_DSN: host=localhost port=5432 user=postgres password=ci-only-password dbname=postgres sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Backend vet
+        working-directory: backend
+        run: go vet ./...
+      # -p 1: the database tests share one database and must not run in parallel
+      - name: Backend tests
+        working-directory: backend
+        run: go test -p 1 ./...
+
+      - name: Frontend install
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+      - name: Frontend lint
+        working-directory: frontend
+        run: bun run lint
+      - name: Frontend typecheck and build
+        working-directory: frontend
+        run: bun run build
+      - name: Frontend tests
+        working-directory: frontend
+        run: bun run test
+
+      - name: Email Worker tests
+        working-directory: cloudflare/email-worker
+        run: npm ci && npm test
+
+  # Real browser against the real stack (docker compose), log in first
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # CI-only values; nothing here is a real secret
+      E2E_EMAIL: e2e@example.com
+      E2E_PASSWORD: ci-only-e2e-password
+      E2E_ADMIN_EMAIL: e2e-admin@example.com
+      E2E_ADMIN_PASSWORD: ci-only-e2e-admin-password
+      INGEST_SECRET: ci-only-ingest-secret-ci-only-ingest-secret
+      # Read by every `docker compose` step below. The override publishes the ingest port on
+      # loopback (in production only cloudflared reaches it)
+      COMPOSE_FILE: docker-compose.yml:.github/e2e.compose.yml
+      DB_PASSWORD: ci-only-db-password
+      MAIL_PROVIDER: local
+      CATCHALL_DOMAIN: e2e.example.test
+      INBOX_SYNC_INTERVAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+      - name: Create the e2e users
+        run: |
+          printf '%s\n' "$E2E_PASSWORD" | docker compose exec -T backend ./api user add "$E2E_EMAIL"
+          printf '%s\n' "$E2E_ADMIN_PASSWORD" | docker compose exec -T backend ./api user add "$E2E_ADMIN_EMAIL" --admin
+      - name: Frontend install
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+      # Google Chrome is preinstalled on ubuntu-latest (playwright.config.ts uses channel "chrome")
+      - name: E2E tests
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:3000
+          E2E_INGEST_URL: http://localhost:8081/api/ingest
+        run: bun run test:e2e
+      - name: Stack logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: frontend/test-results
+          retention-days: 7

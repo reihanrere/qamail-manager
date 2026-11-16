@@ -1,0 +1,12 @@
+# Secrets: copy from the matching .env.example instead
+.env
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Playwright output
+frontend/test-results/
+frontend/playwright-report/

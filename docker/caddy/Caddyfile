@@ -1,0 +1,18 @@
+# HTTPS in front of the web container. Caddy gets and renews the certificate by itself.
+# DOMAIN comes from .env (see docker-compose.prod.yml).
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	# flush_interval -1: send server-sent events (live updates) at once instead of buffering
+	reverse_proxy frontend:80 {
+		flush_interval -1
+	}
+}

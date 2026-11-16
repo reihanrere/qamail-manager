@@ -1,0 +1,6 @@
+# CI only: publish the ingest port on loopback so the e2e test can deliver mail directly.
+# In production the ingest server is reached only by cloudflared inside the Docker network.
+services:
+  backend:
+    ports:
+      - "127.0.0.1:8081:8081"

@@ -1,0 +1,7 @@
+# gitleaks: scan with `gitleaks detect --no-git --source .` (skip node_modules)
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake token (abc123def456ghi789) on example.com in a link-extraction test fixture"
+paths = ['''frontend/src/features/inbox/utils/links\.test\.ts''']

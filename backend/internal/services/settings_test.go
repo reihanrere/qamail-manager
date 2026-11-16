@@ -1,0 +1,119 @@
+package services
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/reihanrere/qamail-manager/internal/models"
+)
+
+func TestApplyOverrides(t *testing.T) {
+	base := testSettings("mailtm")
+	got, err := applyOverrides(base, map[string]string{
+		"tagMaxLength":       `20`,
+		"messageRetention":   `"48h"`,
+		"usernameFirstNames": `[" Budi ", "", "SARI"]`,
+		"defaultProvider":    `" LOCAL "`,
+		"removedSetting":     `true`, // ignored
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Limits.TagMaxLength != 20 || got.MessageRetention != 48*time.Hour || got.DefaultProvider != "local" {
+		t.Fatalf("unexpected %+v", got)
+	}
+	if len(got.FirstNames) != 2 || got.FirstNames[0] != "budi" || got.FirstNames[1] != "sari" {
+		t.Fatalf("list not cleaned: %q", got.FirstNames)
+	}
+	if base.Limits.TagMaxLength != 50 {
+		t.Fatal("baseline must not be modified")
+	}
+}
+
+func TestApplyOverridesRejectsBadValues(t *testing.T) {
+	for key, value := range map[string]string{
+		"tagMaxLength":     `"fifty"`,
+		"messageRetention": `"soon"`,
+	} {
+		if _, err := applyOverrides(testSettings("mailtm"), map[string]string{key: value}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s=%s: expected ErrInvalidInput, got %v", key, value, err)
+		}
+	}
+}
+
+func TestEditableValuesRoundTrip(t *testing.T) {
+	settings := testSettings("mailtm")
+	settings.InboxSyncInterval = 90 * time.Second
+	values := editableValues(settings)
+
+	overrides := map[string]string{}
+	for key, value := range values {
+		raw, _ := json.Marshal(value)
+		overrides[key] = string(raw)
+	}
+	got, err := applyOverrides(Settings{MessagePruneInterval: time.Hour}, overrides)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InboxSyncInterval != 90*time.Second || got.Limits != settings.Limits || got.LegacyUsernamePattern != "^old_prefix_" {
+		t.Fatalf("round trip lost values: %+v", got)
+	}
+}
+
+func TestUpdateSettingsRejectsUnknownKeyBeforeTouchingDB(t *testing.T) {
+	s, _ := NewAccountService(nil, testSettings("mailtm"), stubProvider{"mailtm"})
+	err := s.UpdateSettings(t.Context(), SettingsPatch{Values: map[string]json.RawMessage{"ingestSecret": []byte(`"x"`)}})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+	if err := s.UpdateSettings(t.Context(), SettingsPatch{}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for an empty patch, got %v", err)
+	}
+}
+
+func TestMarkLegacy(t *testing.T) {
+	s, _ := NewAccountService(nil, testSettings("mailtm"), stubProvider{"mailtm"})
+	for email, want := range map[string]bool{
+		"old_prefix_ab12cd34@mailtm.example": true,
+		"rinda.saputra91@mailtm.example":     false,
+		"someone@old_prefix_.example":        false, // only the local part counts
+	} {
+		account := &models.MailAccount{Email: email}
+		s.markLegacy(account)
+		if account.LegacyName != want {
+			t.Errorf("%s: got %v, want %v", email, account.LegacyName, want)
+		}
+	}
+
+	disabled := testSettings("mailtm")
+	disabled.LegacyUsernamePattern = ""
+	s, _ = NewAccountService(nil, disabled, stubProvider{"mailtm"})
+	account := &models.MailAccount{Email: "old_prefix_x@mailtm.example"}
+	s.markLegacy(account)
+	if account.LegacyName {
+		t.Fatal("an empty pattern must disable the legacy check")
+	}
+}
+
+func TestCSVSafe(t *testing.T) {
+	for in, want := range map[string]string{"=SUM(A1)": "'=SUM(A1)", "+1": "'+1", "-x": "'-x", "@me": "'@me", "login": "login", "": ""} {
+		if got := csvSafe(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestValidateRejectsUnknownModes(t *testing.T) {
+	bad := testSettings("mailtm")
+	bad.AutoMarkUsed = "always"
+	if err := bad.validate(); err == nil {
+		t.Fatal("expected an error for an unknown auto mark mode")
+	}
+	bad = testSettings("mailtm")
+	bad.AccountCleanupAction = "archive"
+	if err := bad.validate(); err == nil {
+		t.Fatal("expected an error for an unknown cleanup action")
+	}
+}

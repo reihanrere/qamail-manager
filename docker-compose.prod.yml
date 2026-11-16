@@ -1,0 +1,47 @@
+# Public HTTPS setup: adds Caddy (automatic certificates) in front of the web container.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Before the first start:
+#   - Point a DNS A/AAAA record for DOMAIN at this server and open ports 80 and 443.
+#   - Set DOMAIN in .env (for example DOMAIN=mail.example.com).
+# Already have a reverse proxy (Traefik, nginx, ...)? Skip this file: run the plain
+# docker-compose.yml, publish the web port to the proxy and set COOKIE_SECURE=true.
+services:
+  backend:
+    environment:
+      # Served over HTTPS only, so the session cookie is marked Secure
+      COOKIE_SECURE: "true"
+
+  frontend:
+    # No longer published on the host: only Caddy reaches it
+    ports: !reset []
+    environment:
+      # Caddy runs inside the Docker network, whose addresses are in 172.16.0.0/12 by default.
+      # Only the proxy may name the real client in X-Forwarded-For (login rate limit). Tighten
+      # it to the network's exact subnet if you like:
+      #   docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Subnet}}'
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-172.16.0.0/12}
+      # The Swagger UI loads scripts from a CDN and lists every endpoint: keep it off
+      DOCS_ENABLED: "false"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:
