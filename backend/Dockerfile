@@ -12,7 +12,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
 # ---- runtime ----
-FROM alpine:3.22
+FROM alpine:3.24
 # ca-certificates: HTTPS to api.mail.tm; tzdata: correct local timestamps in logs
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S app && adduser -S -G app app
